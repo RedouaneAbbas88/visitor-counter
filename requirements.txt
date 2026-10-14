@@ -6,3 +6,9 @@ streamlit
 pandas
 gspread
 google-auth
+streamlit
+pandas
+gspread
+google-auth
+plotly
+openpyxl
