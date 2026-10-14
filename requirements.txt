@@ -2,3 +2,7 @@ streamlit
 opencv-python
 ultralytics
 pandas
+streamlit
+pandas
+gspread
+google-auth
