@@ -17,6 +17,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 SCHEMAS = {
     # Schéma conservé à partir du classeur source de l'utilisateur.
     "Creches": ["ID_Creche", "Nom_Creche", "Nom_Legal", "NIF", "NIS", "RC", "Adresse", "Wilaya", "Commune", "Telephone", "Email", "Nom_Directeur", "Capacite_Max", "Devise", "Langue_Defaut", "Date_Creation", "Statut", "Date_Ajout", "Date_Modification"],
+    "Utilisateurs": ["ID_Utilisateur", "ID_Creche", "Nom_Utilisateur", "Mot_de_passe", "Nom_Complet", "Email", "Telephone", "Mot_de_passe_hash", "Role", "Langue", "Statut", "Derniere_Connexion", "Date_Ajout", "Date_Modification"],
     "Journal_Audit": ["ID_Audit", "ID_Creche", "ID_Utilisateur", "Action", "Module", "Type_Objet", "ID_Objet", "Date_Heure", "Resultat", "Details_Sans_Donnees_Sensibles"],
     "Parents": ["ID_Parent", "ID_Creche", "Nom", "Prenom", "Telephone_Principal", "Telephone_Secondaire", "Email", "Adresse", "Profession", "Contact_Urgence_Nom", "Contact_Urgence_Telephone", "Notes_Non_Sensibles", "Statut", "Date_Ajout", "Date_Modification"],
     "Enfants": ["ID_Enfant", "ID_Creche", "Nom", "Prenom", "Date_Naissance", "Sexe", "Adresse", "Date_Premiere_Inscription", "ID_Groupe", "Allergies_Informations_Protegees", "Informations_Medicales_Protegees", "Photo_Fichier_ID", "Statut", "Date_Ajout", "Date_Modification", "Regime_Alimentaire", "Personnes_Autorisees", "Informations_Accueil"],
@@ -123,24 +124,69 @@ def options_from_sheet(sheet, id_col, label_cols, active_only=True):
 def login_screen():
     st.title("🏫 Creche Manager Pro")
     st.caption("Gestion complète des établissements de petite enfance")
+    st.info("Les identifiants sont gérés directement dans la feuille Google Sheets « Utilisateurs ».")
     with st.form("login_form"):
-        username = st.text_input("Identifiant")
+        username = st.text_input("Nom d'utilisateur").strip()
         password = st.text_input("Mot de passe", type="password")
         submitted = st.form_submit_button("Se connecter", type="primary")
+
     if submitted:
+        if not username or not password:
+            st.warning("Saisis le nom d'utilisateur et le mot de passe.")
+            return
         try:
-            import bcrypt
-            cfg = st.secrets["users"].get(username)
-            if cfg and bcrypt.checkpw(password.encode(), cfg["password_hash"].encode()):
-                st.session_state["user"] = {
-                    "username": username, "id_utilisateur": cfg["id_utilisateur"],
-                    "id_creche": cfg["id_creche"], "nom": cfg.get("nom", username),
-                    "role": cfg.get("role", "Administrateur")
-                }
-                st.rerun()
-            st.error("Identifiant ou mot de passe incorrect.")
-        except Exception:
-            st.error("Configuration de connexion invalide. Vérifie les secrets et bcrypt.")
+            ws = get_worksheet("Utilisateurs")
+            records = ws.get_all_records()
+            users = pd.DataFrame(records)
+            if users.empty:
+                st.error("Aucun utilisateur n'est enregistré dans la feuille Utilisateurs.")
+                return
+
+            # Login is matched exactly; passwords are compared as entered in the sheet.
+            required_cols = {"Nom_Utilisateur", "Mot_de_passe", "ID_Utilisateur", "ID_Creche"}
+            if not required_cols.issubset(users.columns):
+                st.error("Colonnes manquantes dans Utilisateurs. Vérifie Nom_Utilisateur, Mot_de_passe, ID_Utilisateur et ID_Creche.")
+                return
+
+            matched = users[
+                users["Nom_Utilisateur"].astype(str).str.strip().str.casefold() == username.casefold()
+            ]
+            if "Statut" in matched.columns:
+                matched = matched[matched["Statut"].astype(str).str.strip().str.casefold().isin(["actif", "active", ""])]
+            if matched.empty:
+                st.error("Nom d'utilisateur ou mot de passe incorrect, ou compte inactif.")
+                return
+
+            user_row = matched.iloc[0]
+            sheet_password = str(user_row.get("Mot_de_passe", "")).strip()
+            if not sheet_password or password != sheet_password:
+                st.error("Nom d'utilisateur ou mot de passe incorrect.")
+                return
+
+            st.session_state["user"] = {
+                "username": username,
+                "id_utilisateur": str(user_row["ID_Utilisateur"]),
+                "id_creche": str(user_row["ID_Creche"]),
+                "nom": str(user_row.get("Nom_Complet", username) or username),
+                "role": str(user_row.get("Role", "Administrateur") or "Administrateur"),
+                "langue": str(user_row.get("Langue", "fr") or "fr"),
+            }
+
+            # Record the last successful login if the column is present.
+            try:
+                headers = ws.row_values(1)
+                if "Derniere_Connexion" in headers:
+                    row_number = int(user_row.name) + 2
+                    col_number = headers.index("Derniere_Connexion") + 1
+                    ws.update_cell(row_number, col_number, datetime.now().isoformat(timespec="seconds"))
+            except Exception:
+                pass
+
+            st.rerun()
+        except Exception as exc:
+            st.error("Impossible de vérifier les identifiants dans Google Sheets.")
+            st.caption("Vérifie le nom de la feuille Utilisateurs, les en-têtes et les autorisations du compte de service.")
+            st.caption(str(exc))
 
 
 def table_page(sheet, title, search_cols=None):
